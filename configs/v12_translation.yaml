@@ -1,0 +1,45 @@
+# Phase 1: Train translation decoder only (NL → FOL premises + question)
+# Translation decoder: 4 layers, 512 dim — same capacity as v1 single decoder
+
+model:
+  encoder_name: "t5-base"
+  max_seq_len: 512
+  translation_decoder:
+    layers: 4
+    heads: 8
+    dim: 512
+    ff_dim: 2048
+    dropout: 0.1
+  proof_decoder:
+    layers: 4
+    heads: 8
+    dim: 512
+    ff_dim: 2048
+    dropout: 0.35
+
+training:
+  batch_size: 16
+  grad_accum_steps: 4
+  learning_rate: 1.9028e-3
+  warmup_steps: 3340             # 16.7% of 20k steps
+  max_steps: 20000
+  bf16: true
+  fp16: false
+  clip_grad_norm: 1.0
+  weight_decay: 3.00e-3
+  label_smoothing: 0.05
+  save_every: 1000
+  eval_every: 500
+  output_dir: "outputs/v12_translation_4L512/"
+
+data:
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/dev.jsonl"
+  max_input_len: 512
+  max_target_len: 512
+
+logging:
+  use_wandb: true
+  project_name: "fol-slm"
+  run_name: "v12-phase1-translation-4L512"
+  log_every: 50

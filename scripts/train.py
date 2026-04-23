@@ -1,6 +1,8 @@
 import sys
 import yaml
 import torch
+from dotenv import load_dotenv
+load_dotenv()
 from pathlib import Path
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
@@ -8,7 +10,7 @@ from torch.utils.data import DataLoader
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.model import FOLModel
-from src.data.dataset import FOLIODataset
+from src.data.dataset import ReasoningDataset
 from src.data.collator import FOLCollator
 from src.training.trainer import Trainer
 
@@ -22,11 +24,11 @@ def main(config_path: str = "configs/base_config.yaml"):
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["encoder_name"])
 
-    train_dataset = FOLIODataset(
+    train_dataset = ReasoningDataset(
         cfg["data"]["train_path"], tokenizer,
         cfg["data"]["max_input_len"], cfg["data"]["max_target_len"],
     )
-    val_dataset = FOLIODataset(
+    val_dataset = ReasoningDataset(
         cfg["data"]["val_path"], tokenizer,
         cfg["data"]["max_input_len"], cfg["data"]["max_target_len"],
     )
@@ -40,8 +42,20 @@ def main(config_path: str = "configs/base_config.yaml"):
     model = FOLModel(cfg["model"], vocab_size=tokenizer.vocab_size)
     print(f"Trainable params: {model.trainable_params():,}  /  Total: {model.total_params():,}")
 
-    trainer = Trainer(model, train_loader, val_loader, cfg["training"], device)
-    trainer.train()
+    trainer = Trainer(
+        model, train_loader, val_loader,
+        cfg["training"], device,
+        logging_config=cfg.get("logging"),
+        diagnostics_config=cfg.get("diagnostics"),
+    )
+
+    start_step = 0
+    if cfg["training"].get("resume_from"):
+        reset_scheduler = cfg["training"].get("reset_scheduler", False)
+        start_step = trainer.resume_from(cfg["training"]["resume_from"], reset_scheduler=reset_scheduler)
+
+    result = trainer.train(start_step=start_step)
+    print(f"Final val_loss: {result['final_val_loss']:.4f}")
 
 
 if __name__ == "__main__":
