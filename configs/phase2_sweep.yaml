@@ -1,0 +1,41 @@
+model:
+  encoder_name: "t5-base"
+  decoder_layers: 6
+  decoder_heads: 8
+  decoder_dim: 512
+  decoder_ff_dim: 2048
+  decoder_dropout: 0.1
+  max_seq_len: 512
+
+training:
+  batch_size: 16
+  grad_accum_steps: 4
+  learning_rate: 1.0e-4             # overridden per sweep
+  warmup_steps: 400              # ~13% of pilot steps (must finish before max_steps / grad_accum)
+  max_steps: 3000                # 15% of ~20k full training (5-7 epochs on 229k examples)
+  fp16: false
+  bf16: true
+  clip_grad_norm: 1.0
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  save_every: 3000               # only save at end
+  eval_every: 500
+  output_dir: "outputs/phase2_sweeps/"
+  resume_from: null
+
+data:
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/dev.jsonl"
+  max_input_len: 256
+  max_target_len: 512
+
+logging:
+  use_wandb: true
+  project_name: "fol-slm"
+  run_name: null                 # set per sweep run
+  log_every: 50
+
+diagnostics:
+  enabled: true
+  log_cross_attn_entropy: true
+  log_grad_norms: false          # less verbose for sweeps

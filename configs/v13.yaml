@@ -1,0 +1,56 @@
+# V13: Two-decoder architecture where proof decoder cross-attends T5 encoder directly.
+# Translation decoder (4L/512d): frozen from v12 translation checkpoint.
+# Proof decoder (4L/512d): trainable, cross-attends T5 encoder (768d), premises-only mask.
+#   - Input: [<extra_id_2>, FOL_question, <extra_id_3>, gold_proof_{0..t-1}]
+#   - Self-attn: naturally sees FOL question + prior proof steps (no mask needed)
+#   - Cross-attn: restricted to NL premises only (before <extra_id_0>)
+
+model:
+  encoder_name: "t5-base"
+  max_seq_len: 512
+  translation_decoder:
+    dim: 512
+    heads: 8
+    layers: 4
+    ff_dim: 2048
+    dropout: 0.1
+  proof_decoder:
+    dim: 512
+    heads: 8
+    layers: 4
+    ff_dim: 2048
+    dropout: 0.242
+
+training:
+  translation_checkpoint: "outputs/v12_translation_4L512/checkpoint_final.pt"
+  batch_size: 16
+  grad_accum_steps: 4
+  learning_rate: 5.3e-4
+  warmup_steps: 5845              # 16.7% of 35k steps
+  max_steps: 35000
+  bf16: true
+  clip_grad_norm: 1.0
+  weight_decay: 9.5e-3
+  label_smoothing: 0.0
+  save_every: 2000
+  eval_every: 1000
+  output_dir: "outputs/v13_final/"
+
+data:
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/dev.jsonl"
+  max_input_len: 512
+  max_target_len: 512
+
+curriculum:
+  phases:
+    - {until_step: 5000,  max_qdep: 1}
+    - {until_step: 10000, max_qdep: 2}
+    - {until_step: 15000, max_qdep: 3}
+    - {until_step: 35000, max_qdep: null}
+
+logging:
+  use_wandb: true
+  project_name: "fol-slm"
+  run_name: "v13-final-4L8H"
+  log_every: 50

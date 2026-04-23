@@ -1,0 +1,52 @@
+# Final training config — best params from Phase 4 Optuna sweep (ASCII-symbol data).
+# Trial #10: val_loss=0.0977, entropy=3.551 (clean convergence, no collapse).
+# Trial run verified: val_loss=0.0994, entropy=3.617 at 3000 steps with 512 token limits.
+
+model:
+  encoder_name: "t5-base"
+  decoder_layers: 4
+  decoder_heads: 8
+  decoder_dim: 512
+  decoder_ff_dim: 2048
+  decoder_dropout: 0.35
+  max_seq_len: 512
+
+training:
+  batch_size: 16
+  grad_accum_steps: 4            # effective batch = 64
+  learning_rate: 1.9028e-3
+  warmup_steps: 4175              # 16.7% of 25k steps
+  max_steps: 25000
+  fp16: false
+  bf16: true
+  clip_grad_norm: 1.0
+  weight_decay: 3.00e-3
+  label_smoothing: 0.05
+  answer_cls_coeff: 0.0         # cls head disabled — weighted sampling fixes imbalance instead
+  answer_cls_start_step: 10000
+  save_every: 2000
+  eval_every: 1000
+  output_dir: "outputs/final_v11/"
+  resume_from: null
+
+data:
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/dev.jsonl"
+  max_input_len: 512
+  max_target_len: 512
+
+curriculum:
+  phases:
+    - {until_step: 5000, max_qdep: 2}   # Phase 1: learn format on easy/medium examples
+    - {until_step: 25000, max_qdep: null} # Phase 2: full difficulty, all QDep
+
+logging:
+  use_wandb: true
+  project_name: "fol-slm"
+  run_name: "final-v11-proof-attn-mask"
+  log_every: 50
+
+diagnostics:
+  enabled: true
+  log_cross_attn_entropy: true
+  log_grad_norms: true

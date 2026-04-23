@@ -19,16 +19,20 @@ class DecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
+        self.last_cross_attn_weights = None
+
     def forward(self, x, encoder_out, tgt_mask=None, memory_key_padding_mask=None):
         # Masked self-attention
         attn_out, _ = self.self_attn(x, x, x, attn_mask=tgt_mask)
         x = self.norm1(x + self.dropout(attn_out))
 
         # Cross-attention over frozen encoder output
-        attn_out, _ = self.cross_attn(
+        attn_out, cross_attn_weights = self.cross_attn(
             x, encoder_out, encoder_out,
             key_padding_mask=memory_key_padding_mask,
+            average_attn_weights=False,  # (B, n_heads, T_dec, T_enc)
         )
+        self.last_cross_attn_weights = cross_attn_weights
         x = self.norm2(x + self.dropout(attn_out))
 
         # Feed-forward
@@ -67,6 +71,8 @@ class TransformerDecoder(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
 
+        self.cross_attn_weights = None
+
         self._init_weights()
 
     def _init_weights(self):
@@ -74,26 +80,46 @@ class TransformerDecoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, tgt_ids, encoder_out, encoder_attention_mask=None):
+    def forward(self, tgt_ids, encoder_out, encoder_attention_mask=None,
+                proof_self_attn_mask=None, proof_cross_attn_mask=None, proof_layer_start=None,
+                raw_memory_key_padding_mask=None):
         B, T = tgt_ids.shape
         device = tgt_ids.device
 
         pos = torch.arange(T, device=device).unsqueeze(0)
         x = self.token_emb(tgt_ids) * math.sqrt(self.d_model) + self.pos_emb(pos)
 
-        # Causal mask
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
+        # Use custom proof self-attn mask if provided (already includes causal masking),
+        # otherwise fall back to standard causal mask.
+        if proof_self_attn_mask is not None:
+            tgt_mask = proof_self_attn_mask
+        else:
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
 
         # Project encoder output to decoder dim
         enc = self.encoder_proj(encoder_out)
 
         # Invert attention mask for key_padding_mask (True = ignore)
-        memory_key_padding_mask = None
-        if encoder_attention_mask is not None:
+        # raw_memory_key_padding_mask bypasses inversion (already bool, True=ignore)
+        if raw_memory_key_padding_mask is not None:
+            memory_key_padding_mask = raw_memory_key_padding_mask
+        elif encoder_attention_mask is not None:
             memory_key_padding_mask = encoder_attention_mask == 0
+        else:
+            memory_key_padding_mask = None
 
-        for layer in self.layers:
-            x = layer(x, enc, tgt_mask=tgt_mask, memory_key_padding_mask=memory_key_padding_mask)
+        for i, layer in enumerate(self.layers):
+            # Proof layers use premises-only cross-attn mask if provided
+            if (proof_cross_attn_mask is not None and proof_layer_start is not None
+                    and i >= proof_layer_start):
+                cross_mask = proof_cross_attn_mask
+            else:
+                cross_mask = memory_key_padding_mask
+            x = layer(x, enc, tgt_mask=tgt_mask, memory_key_padding_mask=cross_mask)
+
+        # Collect cross-attention weights from all layers
+        self.cross_attn_weights = [layer.last_cross_attn_weights for layer in self.layers]
 
         x = self.norm(x)
+        self.last_hidden = x  # (B, T, d_model) — used by answer cls head in trainer
         return self.lm_head(x)  # (B, T, vocab_size)
