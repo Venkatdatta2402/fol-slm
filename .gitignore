@@ -45,3 +45,15 @@ Thumbs.db
 
 # Wandb
 wandb/
+
+# HF card drafts (local only)
+_hf_cards/
+
+# Failed/experimental configs
+configs/*_resume.yaml
+
+# Pytest cache
+.pytest_cache/
+
+# Claude Code internal guidance
+CLAUDE.md

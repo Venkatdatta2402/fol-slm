@@ -22,12 +22,142 @@ Usage:
 
 import argparse
 import json
+import random
 import re
 from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 UNIVERSAL_SUBJECTS = {"someone", "something"}
+
+# ── Name / predicate pools for random substitution ───────────────────────────
+# ProofWriter's fixed vocabulary — excluded from all pools to prevent leakage.
+_PW_ENTITIES    = {"anne","bob","charlie","dave","erin","fiona","gary","harry",
+                   "bear","cat","cow","dog","lion","mouse","rabbit","squirrel","tiger","wolf"}
+_PW_PROPERTIES  = {"kind","cold","rough","blue","green","white","red","young","round",
+                   "quiet","furry","smart","big","nice","black","brown","dark","fast","good"}
+_PW_RELATIONS   = {"visits","chases","sees","eats","needs","likes"}
+
+
+def _build_pools() -> tuple[list, list, list]:
+    """Build large substitution pools from NLTK corpora (downloaded on first call).
+
+    Returns:
+        (entity_pool, property_pool, relation_pool) — each a sorted list of
+        lowercase strings that do NOT overlap with ProofWriter's fixed vocab.
+
+    Pool sizes (approximate, after exclusions):
+        entities   ~7 000  (NLTK names corpus)
+        properties ~13 000 (WordNet adjectives, 4–10 chars, single-word lemmas)
+        relations  ~7 400  (WordNet verbs,      4–10 chars, single-word lemmas)
+    """
+    import nltk
+    for pkg in ("names", "wordnet", "omw-1.4"):
+        nltk.download(pkg, quiet=True)
+    from nltk.corpus import names as _names
+    from nltk.corpus import wordnet as wn
+
+    entities = {
+        n.lower() for n in _names.words()
+        if n.isalpha() and 3 <= len(n) <= 9
+    } - _PW_ENTITIES
+
+    properties = {
+        lemma.name().lower()
+        for syn in wn.all_synsets(pos="a")
+        for lemma in syn.lemmas()
+        if lemma.name().isalpha() and 4 <= len(lemma.name()) <= 10
+    } - _PW_PROPERTIES
+
+    relations = {
+        lemma.name().lower()
+        for syn in wn.all_synsets(pos="v")
+        for lemma in syn.lemmas()
+        if lemma.name().isalpha() and 4 <= len(lemma.name()) <= 10
+    } - _PW_RELATIONS
+
+    return sorted(entities), sorted(properties), sorted(relations)
+
+
+ENTITY_POOL, PROPERTY_POOL, RELATION_POOL = _build_pools()
+
+
+# ── Per-question substitution map ─────────────────────────────────────────────
+
+def _collect_vocab(record: dict) -> tuple[set, set, set]:
+    """Return (entities, properties, relations) found in a record's triples+rules."""
+    entities   = set()
+    properties = set()
+    relations  = set()
+    for triple in record["triples"].values():
+        toks = parse_tokens(triple["representation"])
+        if len(toks) == 4:
+            subj, verb, obj_prop, _ = toks
+            if subj.lower() not in UNIVERSAL_SUBJECTS:
+                entities.add(subj.lower())
+            if verb == "is":
+                properties.add(obj_prop.lower())
+            else:
+                relations.add(verb.lower())
+                if obj_prop.lower() not in UNIVERSAL_SUBJECTS:
+                    entities.add(obj_prop.lower())
+    for rule in record["rules"].values():
+        # rules don't introduce new entities beyond triples, but may reference them
+        rep = rule["representation"]
+        for tok_group in re.findall(r'\("[^)]+\)', rep):
+            toks = parse_tokens(tok_group)
+            if len(toks) == 4:
+                subj, verb, obj_prop, _ = toks
+                if subj.lower() not in UNIVERSAL_SUBJECTS:
+                    entities.add(subj.lower())
+                if verb == "is":
+                    properties.add(obj_prop.lower())
+                else:
+                    relations.add(verb.lower())
+                    if obj_prop.lower() not in UNIVERSAL_SUBJECTS:
+                        entities.add(obj_prop.lower())
+    return entities, properties, relations
+
+
+def make_subst_map(record: dict, rng: random.Random) -> dict:
+    """Build a fresh random substitution map for one question (called per question).
+
+    Returns:
+        {
+          "entities":   {original_lower: replacement_lower},
+          "properties": {original_lower: replacement_lower},
+          "relations":  {original_lower: replacement_lower},
+        }
+    """
+    entities, properties, relations = _collect_vocab(record)
+    subst_entities   = {e: rng.choice(ENTITY_POOL)   for e in sorted(entities)}
+    subst_properties = {p: rng.choice(PROPERTY_POOL) for p in sorted(properties)}
+    subst_relations  = {r: rng.choice(RELATION_POOL) for r in sorted(relations)}
+    return {"entities": subst_entities, "properties": subst_properties, "relations": subst_relations}
+
+
+def apply_nl_substitution(text: str, subst: dict) -> str:
+    """Apply substitution map to a NL string using whole-word regex replacement.
+
+    Entities are title-cased in NL (Anne → Jessica).
+    Properties and relations stay lowercase.
+    Longest originals replaced first to avoid partial overlaps.
+    """
+    replacements = {}
+    for orig, repl in subst["entities"].items():
+        # NL uses capitalised entity names; multi-word joined by space
+        nl_orig = orig.replace("_", " ").title()
+        replacements[nl_orig] = repl.title()
+        replacements[orig]    = repl          # lowercase fallback
+    for orig, repl in subst["properties"].items():
+        replacements[orig] = repl
+    for orig, repl in subst["relations"].items():
+        replacements[orig] = repl
+
+    # Sort by length descending so "bald eagle" is replaced before "eagle"
+    for orig in sorted(replacements, key=len, reverse=True):
+        text = re.sub(r'\b' + re.escape(orig) + r'\b', replacements[orig], text)
+    return text
 
 DEPTHS = ["depth-2", "depth-3", "depth-3ext"]
 
@@ -50,7 +180,7 @@ def parse_tokens(rep: str) -> list:
     return re.findall(r'"([^"]*)"', rep)
 
 
-def atom_to_fol(tokens: list, var: str = "x") -> str:
+def atom_to_fol(tokens: list, var: str = "x", subst: dict = None) -> str:
     """
     Convert a 4-token atom [subject, verb, obj/prop, polarity] to a FOL string.
 
@@ -74,7 +204,24 @@ def atom_to_fol(tokens: list, var: str = "x") -> str:
     negated = polarity in ("-", "~")
     neg = "not " if negated else ""
 
-    subj_fol = var if subject in UNIVERSAL_SUBJECTS else normalize_entity(subject)
+    # Apply substitution before normalisation
+    if subst:
+        subj_key = subject.lower()
+        if subj_key in subst["entities"]:
+            subject = subst["entities"][subj_key]
+        if verb == "is":
+            prop_key = obj_or_prop.lower()
+            if prop_key in subst["properties"]:
+                obj_or_prop = subst["properties"][prop_key]
+        else:
+            rel_key = verb.lower()
+            if rel_key in subst["relations"]:
+                verb = subst["relations"][rel_key]
+            obj_key = obj_or_prop.lower()
+            if obj_key in subst["entities"]:
+                obj_or_prop = subst["entities"][obj_key]
+
+    subj_fol = var if subject.lower() in UNIVERSAL_SUBJECTS else normalize_entity(subject)
 
     if verb == "is":
         pred = normalize_predicate(obj_or_prop)
@@ -85,17 +232,17 @@ def atom_to_fol(tokens: list, var: str = "x") -> str:
         return f"{neg}{pred}({subj_fol}, {obj_fol})"
 
 
-def triple_to_fol(rep: str) -> str:
+def triple_to_fol(rep: str, subst: dict = None) -> str:
     """Convert a triple representation string to a FOL atom string."""
     tokens = parse_tokens(rep)
     if len(tokens) != 4:
         return rep  # fallback: return raw
-    return atom_to_fol(tokens)
+    return atom_to_fol(tokens, subst=subst)
 
 
 # ── Rule-level FOL translation ───────────────────────────────────────────────
 
-def rule_to_fol(rep: str) -> str:
+def rule_to_fol(rep: str, subst: dict = None) -> str:
     """
     Convert a rule representation to a FOL implication string.
 
@@ -142,11 +289,11 @@ def rule_to_fol(rep: str) -> str:
     for atom in condition_atoms:
         tokens = parse_tokens(atom)
         if len(tokens) == 4:
-            cond_fols.append(atom_to_fol(tokens, var))
+            cond_fols.append(atom_to_fol(tokens, var, subst=subst))
 
     # Build conclusion FOL string
     if len(conclusion_tokens) == 4:
-        concl_fol = atom_to_fol(conclusion_tokens, var)
+        concl_fol = atom_to_fol(conclusion_tokens, var, subst=subst)
     else:
         concl_fol = conclusion_str  # fallback
 
@@ -181,12 +328,14 @@ class _ProofParser:
         Step 2: [Furry(anne)], forall x (Furry(x) -> Green(x)) -> Green(anne)
     """
 
-    def __init__(self, proof_rep: str, triples: dict, rules: dict, intermediates: dict):
+    def __init__(self, proof_rep: str, triples: dict, rules: dict, intermediates: dict,
+                 subst: dict = None):
         self.tokens = re.findall(r'\(|\)|->|%|[A-Za-z]\w*', proof_rep)
         self.pos = 0
         self.triples = triples
         self.rules = rules
         self.intermediates = intermediates
+        self.subst = subst
         self.steps: list[tuple[list[str], str, str]] = []
 
     def _peek(self):
@@ -199,11 +348,11 @@ class _ProofParser:
 
     def _fol_of(self, id_str: str) -> str:
         if id_str.startswith("triple"):
-            return triple_to_fol(self.triples[id_str]["representation"])
+            return triple_to_fol(self.triples[id_str]["representation"], subst=self.subst)
         if id_str.startswith("int"):
-            return triple_to_fol(self.intermediates[id_str]["representation"])
+            return triple_to_fol(self.intermediates[id_str]["representation"], subst=self.subst)
         if id_str.startswith("rule"):
-            return rule_to_fol(self.rules[id_str]["representation"])
+            return rule_to_fol(self.rules[id_str]["representation"], subst=self.subst)
         return id_str
 
     def _flatten(self, items) -> list[str]:
@@ -257,7 +406,8 @@ class _ProofParser:
 
 def extract_steps(proof_with_intermediates: dict,
                   triples: dict | None = None,
-                  rules: dict | None = None) -> list:
+                  rules: dict | None = None,
+                  subst: dict = None) -> list:
     """Return ordered proof steps as (input_fols, rule_fol, output_fol) triples.
 
     If triples/rules are provided the full derivation structure is extracted from
@@ -271,7 +421,7 @@ def extract_steps(proof_with_intermediates: dict,
 
     if triples is not None and rules is not None and proof_rep:
         try:
-            parser = _ProofParser(proof_rep, triples, rules, intermediates)
+            parser = _ProofParser(proof_rep, triples, rules, intermediates, subst=subst)
             parser.parse()
             if parser.steps:
                 return parser.steps
@@ -280,12 +430,13 @@ def extract_steps(proof_with_intermediates: dict,
 
     # Fallback: conclusions only (no inputs/rule), sorted by int number
     ordered = sorted(intermediates.items(), key=lambda kv: _int_num(kv[0]), reverse=True)
-    return [([], "", triple_to_fol(val["representation"])) for _, val in ordered]
+    return [([], "", triple_to_fol(val["representation"], subst=subst)) for _, val in ordered]
 
 
 # ── Unknown Failure Trace ─────────────────────────────────────────────────────
 
-def parse_unknown_proof(proofs_str: str, rules: dict, question_fol: str) -> str:
+def parse_unknown_proof(proofs_str: str, rules: dict, question_fol: str,
+                        subst: dict = None) -> str:
     """Translate a ProofWriter failure trace string into a FOL proof section.
 
     Input format:
@@ -315,7 +466,7 @@ def parse_unknown_proof(proofs_str: str, rules: dict, question_fol: str) -> str:
     rule_fols = []
     for rid in rule_ids:
         if rid in rules:
-            rule_fols.append(rule_to_fol(rules[rid]["representation"]))
+            rule_fols.append(rule_to_fol(rules[rid]["representation"], subst=subst))
         else:
             rule_fols.append(rid)
 
@@ -326,33 +477,37 @@ def parse_unknown_proof(proofs_str: str, rules: dict, question_fol: str) -> str:
 
 # ── Record → Training Example ────────────────────────────────────────────────
 
-def process_question(record: dict, question: dict) -> dict | None:
+def process_question(record: dict, question: dict, rng: random.Random) -> dict | None:
     """
     Convert one (record, question) pair into a training example.
 
-    Decoder target (logic field) format:
-        [PREMISES_FOL]
-        <one FOL line per triple, then per rule>
-        [PROOF]
-        <one '∴ FOL' line per derivation step>   (or explanation if Unknown)
-        [ANSWER]
-        <True/False/Unknown>. <NL question text>
+    A fresh random substitution map is generated per question so entity and
+    predicate names vary across every training example, forcing the model to
+    learn structural NL→FOL mapping rather than memorising ProofWriter names.
     """
     answer = question.get("answer")
     question_text = question.get("question", "")
     qdep = question.get("QDep", 0)
 
+    # ── Per-question substitution map ──────────────────────────────────────
+    subst = make_subst_map(record, rng)
+
+    # ── NL premises (encoder input) with substitution applied ──────────────
+    nl_premises = apply_nl_substitution(
+        record["theory"] + " <extra_id_0> " + question_text, subst
+    )
+
     # ── FOL premises block ──────────────────────────────────────────────────
     fol_lines = []
     for t in record["triples"].values():
-        fol_lines.append(triple_to_fol(t["representation"]))
+        fol_lines.append(triple_to_fol(t["representation"], subst=subst))
     for r in record["rules"].values():
-        fol_lines.append(rule_to_fol(r["representation"]))
+        fol_lines.append(rule_to_fol(r["representation"], subst=subst))
     premises_fol = "\n".join(fol_lines)
 
-    # ── FOL question (always computed — used as explicit reasoning target) ──
+    # ── FOL question ────────────────────────────────────────────────────────
     q_rep = question.get("representation", "")
-    question_fol = triple_to_fol(q_rep) if q_rep else question_text
+    question_fol = triple_to_fol(q_rep, subst=subst) if q_rep else question_text
 
     # ── Proof / derivation block ────────────────────────────────────────────
     pwi_list = question.get("proofsWithIntermediates") or []
@@ -362,14 +517,16 @@ def process_question(record: dict, question: dict) -> dict | None:
             question.get("proofs", ""),
             record.get("rules", {}),
             question_fol,
+            subst=subst,
         )
         answer_label = "Unknown"
     elif not pwi_list:
         proof_section = "Cannot be determined from given premises."
         answer_label = "Unknown"
     else:
-        pwi = pwi_list[0]  # take the first valid proof when multiple exist
-        steps = extract_steps(pwi, triples=record.get("triples"), rules=record.get("rules"))
+        pwi = pwi_list[0]
+        steps = extract_steps(pwi, triples=record.get("triples"),
+                              rules=record.get("rules"), subst=subst)
 
         if steps:
             proof_lines = []
@@ -381,19 +538,15 @@ def process_question(record: dict, question: dict) -> dict | None:
                     proof_lines.append(f"therefore {output_fol}")
             proof_section = " <extra_id_5> ".join(proof_lines)
         else:
-            # QDep=0: proof rep is a bare triple/rule ID pointing to the actual fact.
-            # Resolve it directly — this gives the correct FOL including polarity.
-            # e.g. for False: triple8 = ("Erin" "is" "green" "-") → not Green(erin)
-            # Blindly using question_fol would give Green(erin), which is wrong for False.
             proof_rep = pwi.get("representation", "").strip()
             triples = record.get("triples", {})
-            rules = record.get("rules", {})
+            rules   = record.get("rules", {})
             if proof_rep in triples:
-                fact_fol = triple_to_fol(triples[proof_rep]["representation"])
+                fact_fol = triple_to_fol(triples[proof_rep]["representation"], subst=subst)
             elif proof_rep in rules:
-                fact_fol = rule_to_fol(rules[proof_rep]["representation"])
+                fact_fol = rule_to_fol(rules[proof_rep]["representation"], subst=subst)
             else:
-                fact_fol = question_fol  # fallback if ID not found
+                fact_fol = question_fol
             proof_section = f"therefore {fact_fol}"
 
         answer_label = "True" if answer is True else "False"
@@ -406,7 +559,7 @@ def process_question(record: dict, question: dict) -> dict | None:
     )
 
     return {
-        "premises": record["theory"] + " <extra_id_0> " + question_text,
+        "premises": nl_premises,   # substituted NL (encoder input)
         "logic": logic,
         "qdep": qdep,
         "answer": answer_label,
@@ -414,7 +567,10 @@ def process_question(record: dict, question: dict) -> dict | None:
     }
 
 
-def process_file(filepath: Path, min_qdep: int = 0, max_qdep: int = 99) -> list:
+def process_file(filepath: Path, min_qdep: int = 0, max_qdep: int = 99,
+                 rng: random.Random = None) -> list:
+    if rng is None:
+        rng = random.Random()
     examples = []
     with open(filepath) as f:
         for line in f:
@@ -426,7 +582,7 @@ def process_file(filepath: Path, min_qdep: int = 0, max_qdep: int = 99) -> list:
                 qdep = q.get("QDep", 0)
                 if not (min_qdep <= qdep <= max_qdep):
                     continue
-                ex = process_question(record, q)
+                ex = process_question(record, q, rng)
                 if ex:
                     examples.append(ex)
     return examples
@@ -444,11 +600,17 @@ def main():
                         help="Maximum QDep to include (default: unbounded)")
     parser.add_argument("--depths", nargs="+", default=DEPTHS,
                         help=f"Depths to include (default: {DEPTHS})")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for name substitution (default: 42)")
+    parser.add_argument("--no-subst", action="store_true",
+                        help="Disable random name substitution (original ProofWriter names)")
     args = parser.parse_args()
 
     if args.pilot:
         args.min_qdep = 1
         args.max_qdep = 1
+
+    rng = None if args.no_subst else random.Random(args.seed)
 
     base = Path("data/proofwriter")
     out_dir = Path("data/processed")
@@ -457,13 +619,16 @@ def main():
     splits_data = {"train": [], "dev": [], "test": []}
     active_splits = ["train"] if args.pilot else ["train", "dev", "test"]
 
+    subst_label = "disabled" if args.no_subst else f"seed={args.seed}"
+    print(f"Name substitution: {subst_label}")
+
     for depth in args.depths:
         for split in active_splits:
             fpath = base / depth / f"meta-{split}.jsonl"
             if not fpath.exists():
                 print(f"  [skip] {fpath} not found")
                 continue
-            examples = process_file(fpath, args.min_qdep, args.max_qdep)
+            examples = process_file(fpath, args.min_qdep, args.max_qdep, rng=rng)
             splits_data[split].extend(examples)
             print(f"  {depth}/meta-{split}: {len(examples):>7,} examples")
 
