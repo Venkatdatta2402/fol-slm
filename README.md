@@ -2,7 +2,7 @@
 
 A small language model that translates plain-English premises and questions into First-Order Logic (FOL), then uses a [clingo](https://potassco.org/clingo/) ASP solver to derive a verifiable answer with a step-by-step proof.
 
-**HuggingFace Space**: [Venkatdatta/fol-slm-space](https://huggingface.co/spaces/Venkatdatta/fol-slm-space)  
+**HuggingFace Space**: [Venkatdatta/fol-slm-demo](https://huggingface.co/spaces/Venkatdatta/fol-slm-demo)  
 **Model**: [Venkatdatta/fol-slm](https://huggingface.co/Venkatdatta/fol-slm)  
 **Dataset**: [Venkatdatta/fol-data](https://huggingface.co/datasets/Venkatdatta/fol-data)
 
