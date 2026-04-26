@@ -64,20 +64,31 @@ def translate(nl_premises: str, nl_question: str) -> str:
         truncation=True,
     ).to(_device)
 
-    decoder_ids = torch.tensor([[extra_id_1]], device=_device)
+    cur_ids = torch.tensor([[extra_id_1]], device=_device)
     max_len = _cfg["data"]["max_target_len"]
+    all_ids = [cur_ids]
 
     with torch.no_grad():
         encoder_out = _model.encoder(enc["input_ids"], enc["attention_mask"])
-        for _ in range(max_len):
-            logits = _model.translation_decoder(decoder_ids, encoder_out, enc["attention_mask"])
-            next_token = logits[0, -1].argmax(-1).item()
-            decoder_ids = torch.cat(
-                [decoder_ids, torch.tensor([[next_token]], device=_device)], dim=1
-            )
+
+        logits, past_kv = _model.translation_decoder(
+            cur_ids, encoder_out, enc["attention_mask"], use_cache=True
+        )
+        next_token = logits[0, -1].argmax(-1).item()
+        all_ids.append(torch.tensor([[next_token]], device=_device))
+
+        for _ in range(max_len - 1):
             if next_token == extra_id_3 or next_token == _tokenizer.eos_token_id:
                 break
+            cur_ids = torch.tensor([[next_token]], device=_device)
+            logits, past_kv = _model.translation_decoder(
+                cur_ids, encoder_out, enc["attention_mask"],
+                past_key_values=past_kv, use_cache=True,
+            )
+            next_token = logits[0, -1].argmax(-1).item()
+            all_ids.append(torch.tensor([[next_token]], device=_device))
 
+    decoder_ids = torch.cat(all_ids, dim=1)
     return _tokenizer.decode(decoder_ids[0], skip_special_tokens=False)
 
 
