@@ -38,6 +38,10 @@ data:
   max_input_len: 512
   max_target_len: 512
 
+curriculum:
+  start_max_qdep: 2       # train on QDep ≤ 2 for the first phase
+  switch_step: 5000       # switch to full dataset at this step
+
 logging:
   use_wandb: true
   project_name: "fol-slm"

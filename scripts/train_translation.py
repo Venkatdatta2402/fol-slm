@@ -130,11 +130,13 @@ def main(config_path: str = "configs/v12_translation.yaml", resume_from: str = N
     model.train()
     optimizer.zero_grad()
 
-    # Curriculum — skip phases already passed when resuming
-    train_loader = make_loader(max_qdep=2)
-    curriculum = [(5000, make_loader(max_qdep=None))]
-    # If resuming past the curriculum switch point, start with the full-data loader
-    if resume_step >= 5000:
+    # Curriculum — read from config, skip phases already passed when resuming
+    cur_cfg     = cfg.get("curriculum", {})
+    start_qdep  = cur_cfg.get("start_max_qdep", None)
+    switch_step = cur_cfg.get("switch_step", None)
+    train_loader = make_loader(max_qdep=start_qdep)
+    curriculum = [(switch_step, make_loader(max_qdep=None))] if switch_step else []
+    if switch_step and resume_step >= switch_step:
         train_loader = curriculum.pop(0)[1]
         print(f"Resuming past curriculum switch — using full data loader")
     data_iter = iter(train_loader)

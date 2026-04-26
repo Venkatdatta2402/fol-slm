@@ -170,12 +170,12 @@ for step in result["proof"]:
 
 ## Results
 
-Evaluated on the full test split (66k examples, unseen vocabulary):
+Evaluated on the full test split (66,556 examples, unseen vocabulary):
 
 | Metric | Score |
 |--------|-------|
-| Premises-FOL accuracy (fuzzy) | TBD |
-| Question FOL exact match | TBD |
+| Premises-FOL accuracy (fuzzy) | **85.8%** |
+| Question FOL exact match | **91.1%** (60,621 / 66,556) |
 
 ---
 
