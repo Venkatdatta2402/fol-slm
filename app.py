@@ -66,16 +66,16 @@ def predict(nl_premises: str, nl_question: str):
 
 EXAMPLES = [
     [
-        "Anne is kind. Bob is furry. If someone is kind then they are furry. If someone is furry then they are green.",
-        "Anne is green.",
+        "Sarah is curious. Sarah is diligent. If someone is curious and diligent then they are thoughtful. If someone is thoughtful then they are wise.",
+        "Sarah is wise.",
     ],
     [
-        "Anne is kind. Bob is cold. If someone is kind and cold then they are smart. If someone is smart then they are young.",
-        "Bob is young.",
+        "David is athletic. Emma is patient. If someone is athletic and patient then they are disciplined. If someone is disciplined then they are focused.",
+        "Emma is focused.",
     ],
     [
-        "Anne is kind. Bob is furry.",
-        "Anne is furry.",
+        "Alex is ambitious. If someone is ambitious and resilient then they are successful.",
+        "Alex is successful.",
     ],
 ]
 
