@@ -1,13 +1,15 @@
 """Evaluate translation decoder (Phase 1) of FOLModelV2.
 
 Generates FOL premises + question from NL input and scores against gold.
+Runs all GPU inference first, then scores in parallel on CPU.
 
 Usage:
     python scripts/evaluate_translation.py \
         --checkpoint outputs/v12_translation_4L512/checkpoint_final.pt \
         --config configs/v12_translation.yaml \
         --input-file data/processed/test.jsonl \
-        --batch-size 64
+        --batch-size 64 \
+        --workers 8
 """
 
 import sys
@@ -17,6 +19,7 @@ import yaml
 import torch
 from pathlib import Path
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -30,7 +33,6 @@ from scripts.evaluate import (  # type: ignore
 
 
 def generate_batch(model, tokenizer, input_texts, cfg, device):
-    """Batched greedy decode: returns one decoded string per input."""
     extra_id_1 = tokenizer.convert_tokens_to_ids("<extra_id_1>")
     extra_id_3 = tokenizer.convert_tokens_to_ids("<extra_id_3>")
     eos        = tokenizer.eos_token_id
@@ -46,20 +48,39 @@ def generate_batch(model, tokenizer, input_texts, cfg, device):
     ).to(device)
 
     B = len(input_texts)
-    decoder_ids = torch.full((B, 1), extra_id_1, dtype=torch.long, device=device)
-    finished    = torch.zeros(B, dtype=torch.bool, device=device)
+    # Start token
+    cur_ids  = torch.full((B, 1), extra_id_1, dtype=torch.long, device=device)
+    finished = torch.zeros(B, dtype=torch.bool, device=device)
+    all_tokens = [cur_ids]
 
     with torch.no_grad():
         encoder_out = model.encoder(enc["input_ids"], enc["attention_mask"])
-        for _ in range(max_len):
-            logits      = model.translation_decoder(decoder_ids, encoder_out, enc["attention_mask"])
-            next_tokens = logits[:, -1].argmax(-1)
-            next_tokens[finished] = pad
-            decoder_ids = torch.cat([decoder_ids, next_tokens.unsqueeze(1)], dim=1)
-            finished   |= (next_tokens == extra_id_3) | (next_tokens == eos)
+
+        # First step: full prefix, build KV cache
+        logits, past_kv = model.translation_decoder(
+            cur_ids, encoder_out, enc["attention_mask"], use_cache=True
+        )
+        next_tokens = logits[:, -1].argmax(-1)
+        finished   |= (next_tokens == extra_id_3) | (next_tokens == eos)
+        all_tokens.append(next_tokens.unsqueeze(1))
+
+        # Subsequent steps: one new token at a time, reuse KV cache
+        for _ in range(max_len - 1):
             if finished.all():
                 break
+            cur_ids = next_tokens.unsqueeze(1).clone()
+            cur_ids[finished] = pad
 
+            logits, past_kv = model.translation_decoder(
+                cur_ids, encoder_out, enc["attention_mask"],
+                past_key_values=past_kv, use_cache=True,
+            )
+            next_tokens = logits[:, -1].argmax(-1)
+            next_tokens[finished] = pad
+            finished   |= (next_tokens == extra_id_3) | (next_tokens == eos)
+            all_tokens.append(next_tokens.unsqueeze(1))
+
+    decoder_ids = torch.cat(all_tokens, dim=1)  # (B, total_len)
     return [tokenizer.decode(seq, skip_special_tokens=False) for seq in decoder_ids]
 
 
@@ -80,13 +101,22 @@ def parse_pred(decoded_str):
         prem_end   = decoded_str.index("<extra_id_2>")
         q_start    = prem_end + len("<extra_id_2>")
         try:
-            q_end  = decoded_str.index("<extra_id_3>")
+            q_end    = decoded_str.index("<extra_id_3>")
             question = decoded_str[q_start:q_end].strip()
         except ValueError:
             question = decoded_str[q_start:].strip()
         return decoded_str[prem_start:prem_end].strip(), question
     except ValueError:
         return "", ""
+
+
+def score_one(args):
+    gold_prem, gold_q, pred_prem, pred_q = args
+    gold_lines = _split_fol_statements(gold_prem)
+    pred_lines = _split_fol_statements(pred_prem)
+    prem_score, _ = score_premises_fol(gold_lines, pred_lines)
+    q_match = 1 if pred_q == gold_q else 0
+    return prem_score, q_match
 
 
 def main():
@@ -96,6 +126,8 @@ def main():
     parser.add_argument("--input-file",  default="data/processed/test.jsonl")
     parser.add_argument("--max-samples", type=int, default=0, help="0 = full dataset")
     parser.add_argument("--batch-size",  type=int, default=64)
+    parser.add_argument("--workers",     type=int, default=min(8, cpu_count()),
+                        help="CPU workers for parallel scoring")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -116,11 +148,12 @@ def main():
             samples.append(json.loads(line))
             if args.max_samples and len(samples) >= args.max_samples:
                 break
+    print(f"Samples: {len(samples)}  |  batch_size: {args.batch_size}  |  workers: {args.workers}")
 
-    prem_scores, q_exact = [], []
-
+    # ── Phase 1: GPU inference (all batches, no scoring) ─────────────────────
+    score_args = []
     batches = range(0, len(samples), args.batch_size)
-    for start in tqdm(batches, desc="Evaluating"):
+    for start in tqdm(batches, desc="GPU inference"):
         batch   = samples[start : start + args.batch_size]
         texts   = [s["premises"] for s in batch]
         decoded = generate_batch(model, tokenizer, texts, cfg, device)
@@ -128,12 +161,19 @@ def main():
         for sample, dec in zip(batch, decoded):
             gold_prem, gold_q = parse_gold(sample["logic"])
             pred_prem, pred_q = parse_pred(dec)
+            score_args.append((gold_prem, gold_q, pred_prem, pred_q.strip()))
 
-            gold_lines = _split_fol_statements(gold_prem)
-            pred_lines = _split_fol_statements(pred_prem)
-            score, _   = score_premises_fol(gold_lines, pred_lines)
-            prem_scores.append(score)
-            q_exact.append(1 if pred_q.strip() == gold_q.strip() else 0)
+    # ── Phase 2: parallel CPU scoring ────────────────────────────────────────
+    print(f"Scoring {len(score_args)} samples with {args.workers} workers...")
+    with Pool(processes=args.workers) as pool:
+        results = list(tqdm(
+            pool.imap(score_one, score_args, chunksize=64),
+            total=len(score_args),
+            desc="Scoring",
+        ))
+
+    prem_scores = [r[0] for r in results]
+    q_exact     = [r[1] for r in results]
 
     n        = len(prem_scores)
     avg_prem = sum(prem_scores) / n * 100
