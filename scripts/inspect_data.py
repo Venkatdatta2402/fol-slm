@@ -4,7 +4,7 @@ Groups examples by: answer (True/False/Unknown) x negated/non-negated x QDep
 Shows 1-2 examples per unique combination, with full raw and preprocessed data.
 
 Usage:
-    python scripts/inspect_preprocessing.py --out-file outputs/preprocessing_inspection.txt
+    python scripts/inspect_data.py --out-file outputs/preprocessing_inspection.txt
 """
 
 import sys
@@ -16,7 +16,7 @@ from collections import defaultdict
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from scripts.preprocess_proofwriter import (  # type: ignore
+from scripts.preprocess import (  # type: ignore
     process_question, triple_to_fol, rule_to_fol
 )
 

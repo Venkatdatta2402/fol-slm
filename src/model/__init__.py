@@ -1,1 +1,1 @@
-from .model import FOLModel, FOLModelV2, FOLModelV3  # noqa: F401
+from .model import FOLModel, FOLModelV2  # noqa: F401

@@ -64,7 +64,7 @@ data/proofwriter/
 ### Preprocessing
 
 ```bash
-python scripts/preprocess_proofwriter.py
+python scripts/preprocess.py
 ```
 
 Outputs `data/processed/train.jsonl`, `dev.jsonl`, `test.jsonl` (~229k / 33k / 66k examples).
@@ -107,7 +107,7 @@ Each line in `data/processed/*.jsonl`:
 ## Training
 
 ```bash
-python scripts/train_translation.py --config configs/v12_translation.yaml
+python scripts/train.py --config configs/v12_translation.yaml
 ```
 
 Key settings:
@@ -122,7 +122,7 @@ Key settings:
 ## Hyperparameter Sweep
 
 ```bash
-python scripts/optuna_sweep.py --config configs/v12_translation.yaml --n-trials 20
+python scripts/sweep.py --config configs/v12_translation.yaml --n-trials 20
 ```
 
 Searches: `lr`, `weight_decay`, `label_smoothing`, `dropout`, `warmup_fraction`, `layers`, `heads`.  
@@ -134,7 +134,7 @@ Results saved to `outputs/optuna_study.db`.
 ## Evaluation
 
 ```bash
-python scripts/evaluate_translation.py \
+python scripts/evaluate.py \
     --checkpoint outputs/v12_translation_4L512/checkpoint_final.pt \
     --config configs/v12_translation.yaml \
     --input-file data/processed/test.jsonl \

@@ -10,7 +10,7 @@ Known-good baseline (step 20k):
     dropout=0.1, warmup_fraction=0.167, layers=4, heads=8
 
 Usage:
-    python scripts/optuna_sweep.py --config configs/v12_translation.yaml --n-trials 20
+    python scripts/sweep.py --config configs/v12_translation.yaml --n-trials 20
 """
 
 import sys

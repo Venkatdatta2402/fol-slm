@@ -1,10 +1,10 @@
 """Analyze evaluation results: failure case txt files + confusion matrices.
 
 Usage:
-    python scripts/analyze_failures.py \
-        --eval-file outputs/eval_v8_200.jsonl \
+    python scripts/analyze.py \
+        --eval-file outputs/eval_200.jsonl \
         --test-file data/processed/test.jsonl \
-        --out-dir outputs/analysis_v8
+        --out-dir outputs/analysis
 """
 
 import sys
@@ -14,7 +14,7 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from scripts.evaluate import parse_output  # type: ignore
+from src.utils.scoring import parse_output
 
 
 LABELS = ["true", "false", "unknown"]

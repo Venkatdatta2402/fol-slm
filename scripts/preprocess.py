@@ -15,9 +15,9 @@ Output schema (matches ReasoningDataset):
     source    — original record id
 
 Usage:
-    python scripts/preprocess_proofwriter.py                  # all depths, all splits
-    python scripts/preprocess_proofwriter.py --pilot          # QDep=1 only, train split
-    python scripts/preprocess_proofwriter.py --min-qdep 1     # exclude trivial QDep=0
+    python scripts/preprocess.py                  # all depths, all splits
+    python scripts/preprocess.py --pilot          # QDep=1 only, train split
+    python scripts/preprocess.py --min-qdep 1     # exclude trivial QDep=0
 """
 
 import argparse
